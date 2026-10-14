@@ -1,0 +1,104 @@
+/**
+ * Operator roles. Every admin account has a role; there is no implicit super-admin.
+ */
+
+export enum ADMIN_ROLE {
+  SUPER_ADMIN = 'super_admin',
+  COMPLIANCE = 'compliance',
+  FINANCE = 'finance',
+  SUPPORT = 'support',
+  MARKETING = 'marketing',
+  READ_ONLY = 'read_only',
+}
+
+export enum ADMIN_PERMISSION {
+  VIEW_DASHBOARD = 'view_dashboard',
+  VIEW_USERS = 'view_users',
+  VIEW_TRANSACTIONS = 'view_transactions',
+  VIEW_FINANCE = 'view_finance',
+  VIEW_COMPLIANCE = 'view_compliance',
+  VIEW_AUDIT = 'view_audit',
+  VIEW_SUPPORT = 'view_support',
+  VIEW_MARKETING = 'view_marketing',
+  VIEW_FRAUD = 'view_fraud',
+  VIEW_SYSTEM = 'view_system',
+  MANAGE_KYC = 'manage_kyc',
+  MANAGE_SUBSCRIPTIONS = 'manage_subscriptions',
+  MANAGE_SAVINGS = 'manage_savings',
+  MANAGE_REFERRALS = 'manage_referrals',
+  MANAGE_CARDS = 'manage_cards',
+  MANAGE_SUPPORT = 'manage_support',
+  MANAGE_USERS = 'manage_users',
+  IMPERSONATE_USERS = 'impersonate_users',
+  MANAGE_NOTIFICATIONS = 'manage_notifications',
+  MANAGE_FEATURE_FLAGS = 'manage_feature_flags',
+  MANAGE_FRAUD = 'manage_fraud',
+  APPROVE_SENSITIVE_ACTIONS = 'approve_sensitive_actions',
+  MANAGE_ADMINS = 'manage_admins',
+}
+
+const ALL_PERMISSIONS = Object.values(ADMIN_PERMISSION);
+
+export const ROLE_PERMISSIONS: Record<ADMIN_ROLE, ADMIN_PERMISSION[]> = {
+  [ADMIN_ROLE.SUPER_ADMIN]: ALL_PERMISSIONS,
+  [ADMIN_ROLE.COMPLIANCE]: [
+    ADMIN_PERMISSION.VIEW_DASHBOARD,
+    ADMIN_PERMISSION.VIEW_USERS,
+    ADMIN_PERMISSION.VIEW_TRANSACTIONS,
+    ADMIN_PERMISSION.VIEW_COMPLIANCE,
+    ADMIN_PERMISSION.VIEW_AUDIT,
+    ADMIN_PERMISSION.VIEW_FRAUD,
+    ADMIN_PERMISSION.MANAGE_KYC,
+    ADMIN_PERMISSION.MANAGE_FRAUD,
+  ],
+  [ADMIN_ROLE.FINANCE]: [
+    ADMIN_PERMISSION.VIEW_DASHBOARD,
+    ADMIN_PERMISSION.VIEW_TRANSACTIONS,
+    ADMIN_PERMISSION.VIEW_FINANCE,
+    ADMIN_PERMISSION.VIEW_AUDIT,
+    ADMIN_PERMISSION.MANAGE_SUBSCRIPTIONS,
+    ADMIN_PERMISSION.APPROVE_SENSITIVE_ACTIONS,
+  ],
+  [ADMIN_ROLE.SUPPORT]: [
+    ADMIN_PERMISSION.VIEW_DASHBOARD,
+    ADMIN_PERMISSION.VIEW_USERS,
+    ADMIN_PERMISSION.VIEW_TRANSACTIONS,
+    ADMIN_PERMISSION.VIEW_SUPPORT,
+    ADMIN_PERMISSION.MANAGE_SUPPORT,
+    ADMIN_PERMISSION.MANAGE_CARDS,
+    ADMIN_PERMISSION.MANAGE_USERS,
+    ADMIN_PERMISSION.MANAGE_NOTIFICATIONS,
+  ],
+  [ADMIN_ROLE.MARKETING]: [
+    ADMIN_PERMISSION.VIEW_DASHBOARD,
+    ADMIN_PERMISSION.VIEW_MARKETING,
+    ADMIN_PERMISSION.MANAGE_REFERRALS,
+    ADMIN_PERMISSION.MANAGE_NOTIFICATIONS,
+  ],
+  [ADMIN_ROLE.READ_ONLY]: [
+    ADMIN_PERMISSION.VIEW_DASHBOARD,
+    ADMIN_PERMISSION.VIEW_USERS,
+    ADMIN_PERMISSION.VIEW_TRANSACTIONS,
+    ADMIN_PERMISSION.VIEW_FINANCE,
+    ADMIN_PERMISSION.VIEW_COMPLIANCE,
+    ADMIN_PERMISSION.VIEW_AUDIT,
+    ADMIN_PERMISSION.VIEW_SUPPORT,
+    ADMIN_PERMISSION.VIEW_MARKETING,
+    ADMIN_PERMISSION.VIEW_FRAUD,
+    ADMIN_PERMISSION.VIEW_SYSTEM,
+  ],
+};
+
+export function isAdminRole(value: unknown): value is ADMIN_ROLE {
+  return typeof value === 'string' && (Object.values(ADMIN_ROLE) as string[]).includes(value);
+}
+
+export function roleHasPermission(role: ADMIN_ROLE, permission: ADMIN_PERMISSION): boolean {
+  if (role === ADMIN_ROLE.SUPER_ADMIN) return true;
+  return (ROLE_PERMISSIONS[role] || []).includes(permission);
+}
+
+export function permissionsForRole(role: ADMIN_ROLE): ADMIN_PERMISSION[] {
+  if (role === ADMIN_ROLE.SUPER_ADMIN) return ALL_PERMISSIONS;
+  return ROLE_PERMISSIONS[role] || [];
+}
