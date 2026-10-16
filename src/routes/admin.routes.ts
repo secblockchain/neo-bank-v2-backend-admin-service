@@ -30,6 +30,8 @@ const manageAdmins = requirePermission(ADMIN_PERMISSION.MANAGE_ADMINS);
 const impersonate = requirePermission(ADMIN_PERMISSION.IMPERSONATE_USERS);
 const viewSupport = requirePermission(ADMIN_PERMISSION.VIEW_SUPPORT);
 const manageSupport = requirePermission(ADMIN_PERMISSION.MANAGE_SUPPORT);
+const viewPilots = requirePermission(ADMIN_PERMISSION.VIEW_PILOTS);
+const managePilots = requirePermission(ADMIN_PERMISSION.MANAGE_PILOTS);
 
 router.post('/auth/login', asyncHandler(admin.login));
 
@@ -128,6 +130,10 @@ router.get('/system/logs', viewSystem, asyncHandler(admin.systemLogs));
 router.get('/feature-flags', viewSystem, asyncHandler(admin.flagList));
 router.post('/feature-flags', manageFlags, asyncHandler(admin.flagUpsert));
 router.delete('/feature-flags/:key', manageFlags, asyncHandler(admin.flagDelete));
+
+router.get('/pilots', viewPilots, asyncHandler(admin.pilotList));
+router.post('/pilots', managePilots, asyncHandler(admin.pilotAdd));
+router.post('/pilots/:email/deactivate', managePilots, asyncHandler(admin.pilotDeactivate));
 
 router.get('/saved-views', viewDashboard, asyncHandler(admin.savedViewList));
 router.post('/saved-views', viewDashboard, asyncHandler(admin.savedViewCreate));

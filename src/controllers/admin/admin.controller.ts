@@ -15,6 +15,7 @@ import * as kyc from '../../services/kyc.service';
 import * as subscriptions from '../../services/subscriptions.service';
 import * as commerce from '../../services/commerce.service';
 import * as platform from '../../services/platform.service';
+import * as pilots from '../../services/pilots.service';
 import * as money from '../../services/money.service';
 import * as ops from '../../services/ops.service';
 import { globalSearch } from '../../services/search.service';
@@ -524,6 +525,56 @@ export async function flagDelete(req: Request, res: Response) {
     res,
     await platform.deleteFeatureFlag(actorFromRequest(req), String(req.params.key)),
     'Feature flag deleted.',
+  );
+}
+
+export async function pilotList(req: Request, res: Response) {
+  const q = queryOf(req);
+  const activeRaw = q.active;
+  let active: boolean | undefined;
+  if (activeRaw === 'true' || activeRaw === true) active = true;
+  else if (activeRaw === 'false' || activeRaw === false) active = false;
+
+  return paged(
+    req,
+    res,
+    (skip, limit) =>
+      pilots.listPilots(
+        {
+          search: typeof q.search === 'string' ? q.search : undefined,
+          active,
+        },
+        skip,
+        limit,
+      ),
+    'Pilots retrieved.',
+  );
+}
+
+export async function pilotAdd(req: Request, res: Response) {
+  const body = req.body ?? {};
+  const pilot = await pilots.addPilot(
+    actorFromRequest(req),
+    requireBodyString(body, 'email'),
+    typeof body.note === 'string' ? body.note : undefined,
+  );
+  return ok(
+    req,
+    res,
+    typeof pilot.toObject === 'function' ? pilot.toObject() : pilot,
+    'Pilot added.',
+  );
+}
+
+export async function pilotDeactivate(req: Request, res: Response) {
+  const email = decodeURIComponent(String(req.params.email ?? ''));
+  if (!email.trim()) throw new ApiError(400, 'email is required.');
+  const pilot = await pilots.deactivatePilot(actorFromRequest(req), email);
+  return ok(
+    req,
+    res,
+    typeof pilot.toObject === 'function' ? pilot.toObject() : pilot,
+    'Pilot deactivated.',
   );
 }
 

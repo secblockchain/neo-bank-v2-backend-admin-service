@@ -76,6 +76,12 @@ export const RainPaymentAccount = model<LooseDoc>(
   new Schema({}, { ...loose, collection: 'rainpaymentaccounts' }),
 );
 
+/** Customer-service pilot allowlist (email → active). Soft-deactivate only; never hard-delete. */
+export const PilotUser = model<LooseDoc>(
+  'PilotUser',
+  new Schema({}, { ...loose, collection: 'pilotusers' }),
+);
+
 export const USER_SECRET_FIELDS =
   '-password -totpSecret -totpSecretIv -totpPendingSecret -totpPendingSecretIv -twoFactorCode -totpBackupCodes';
 
