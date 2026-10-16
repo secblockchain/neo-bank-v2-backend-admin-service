@@ -24,6 +24,7 @@ import {
   docId,
 } from '../models/domain.models';
 import { ApiError } from '../utils/ApiError';
+import { collectionExists } from '../utils/collectionExists';
 import { createdAtRangeFilter, mergeFilters } from '../utils/dateFilter';
 import { enrichWithUserDisplay } from '../utils/enrichUsers';
 import { escapeRegex, parseObjectId } from '../utils/query';
@@ -67,45 +68,65 @@ function userOrFilter(userId: string): FilterQuery<LooseDoc> {
   return { $or: or };
 }
 
-export async function listWallets(query: Record<string, unknown>, skip: number, limit: number) {
-  const filter: FilterQuery<LooseDoc> = { ...createdAtRangeFilter(query) };
-  if (typeof query.status === 'string' && query.status.trim()) filter.status = query.status.trim();
+function walletQueryFilter(query: Record<string, unknown>): FilterQuery<LooseDoc> {
+  const parts: FilterQuery<LooseDoc>[] = [createdAtRangeFilter(query)];
+  const status = typeof query.status === 'string' ? query.status.trim() : '';
   const userId = typeof query.userId === 'string' ? query.userId.trim() : '';
-  if (userId) Object.assign(filter, userOrFilter(userId));
   const search = typeof query.search === 'string' ? query.search.trim() : '';
+  if (status) parts.push({ status });
+  if (userId) parts.push(userOrFilter(userId));
   if (search) {
     const pattern = new RegExp(escapeRegex(search), 'i');
-    filter.$or = [
-      ...(Array.isArray(filter.$or) ? filter.$or : []),
-      { address: pattern },
-      { walletAddress: pattern },
-      { chain: pattern },
-      { email: pattern },
-    ];
+    parts.push({
+      $or: [
+        { address: pattern },
+        { walletAddress: pattern },
+        { chain: pattern },
+        { email: pattern },
+      ],
+    });
   }
-  const result = await safePage(MultichainsWallet, filter, skip, limit);
-  if (result.total > 0) {
-    return {
-      ...result,
-      items: await enrichWithUserDisplay(result.items as Record<string, unknown>[], [
-        'userId',
-        'ownerId',
-        'customerId',
-      ]),
-    };
+  return mergeFilters(...parts);
+}
+
+/**
+ * Used only when `multichainswallets` does not exist.
+ * userId, status, search, and the date range stay on the query.
+ */
+async function listUnprovisionedWalletProxies(
+  query: Record<string, unknown>,
+  skip: number,
+  limit: number,
+) {
+  const userId = typeof query.userId === 'string' ? query.userId.trim() : '';
+  const search = typeof query.search === 'string' ? query.search.trim() : '';
+  const status = typeof query.status === 'string' ? query.status.trim() : '';
+  if (userId && !Types.ObjectId.isValid(userId)) {
+    return { items: [], total: 0 };
   }
 
-  // Fallback: users with rain identity as wallet holders
-  const userFilter: FilterQuery<LooseDoc> = {};
-  if (userId && Types.ObjectId.isValid(userId)) userFilter._id = parseObjectId(userId, 'user id');
+  const parts: FilterQuery<LooseDoc>[] = [createdAtRangeFilter(query)];
+  if (userId) parts.push({ _id: parseObjectId(userId, 'user id') });
+  if (status) parts.push({ accountStatus: status });
   if (search) {
     const pattern = new RegExp(escapeRegex(search), 'i');
-    userFilter.$or = [{ email: pattern }, { firstName: pattern }, { lastName: pattern }];
+    parts.push({
+      $or: [
+        { email: pattern },
+        { firstName: pattern },
+        { lastName: pattern },
+        { displayName: pattern },
+      ],
+    });
   }
+
+  const userFilter = mergeFilters(...parts);
   const [total, users] = await Promise.all([
     RainUser.countDocuments(userFilter),
     RainUser.find(userFilter)
-      .select('email firstName lastName displayName rainExternalUserId accountKind createdAt')
+      .select(
+        'email firstName lastName displayName rainExternalUserId accountKind accountStatus createdAt',
+      )
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
@@ -120,9 +141,29 @@ export async function listWallets(query: Record<string, unknown>, skip: number, 
       displayName: u.displayName ?? `${u.firstName ?? ''} ${u.lastName ?? ''}`.trim(),
       rainExternalUserId: u.rainExternalUserId ?? null,
       accountKind: u.accountKind,
+      accountStatus: u.accountStatus ?? null,
       type: 'user_wallet_proxy',
+      provisioned: false,
+      chains: [],
       createdAt: u.createdAt,
     })),
+  };
+}
+
+export async function listWallets(query: Record<string, unknown>, skip: number, limit: number) {
+  if (!(await collectionExists(MultichainsWallet))) {
+    return listUnprovisionedWalletProxies(query, skip, limit);
+  }
+
+  const filter = walletQueryFilter(query);
+  const [total, docs] = await Promise.all([
+    MultichainsWallet.countDocuments(filter),
+    MultichainsWallet.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+  ]);
+  const sanitized = (docs as Record<string, unknown>[]).map(sanitizeWalletSummary);
+  return {
+    total,
+    items: await enrichWithUserDisplay(sanitized, ['userId', 'ownerId', 'customerId']),
   };
 }
 
@@ -186,10 +227,50 @@ function sanitizeChainEntry(chainId: string, raw: unknown) {
       lottery26: lottery26Locked,
       total: totalLocked,
     },
-    metadata:
-      chain.metadata && typeof chain.metadata === 'object'
-        ? (chain.metadata as Record<string, unknown>)
-        : null,
+  };
+}
+
+function sanitizedChains(wallet: Record<string, unknown>) {
+  const chainsRaw = wallet.chains;
+  if (!chainsRaw || typeof chainsRaw !== 'object') return [];
+  const pairs: Array<[string, unknown]> =
+    chainsRaw instanceof Map
+      ? Array.from(chainsRaw.entries())
+      : Object.entries(chainsRaw as Record<string, unknown>);
+  const chains = pairs
+    .map(([key, value]) => sanitizeChainEntry(key, value))
+    .filter((entry): entry is NonNullable<ReturnType<typeof sanitizeChainEntry>> => entry != null);
+  chains.sort((a, b) => a.chainId - b.chainId);
+  return chains;
+}
+
+function walletOwnerId(wallet: Record<string, unknown>): string | null {
+  const raw =
+    (typeof wallet.userId === 'string' && wallet.userId) ||
+    docId(wallet.userId) ||
+    docId(wallet.ownerId) ||
+    docId(wallet.customerId);
+  if (!raw) return null;
+  return raw.replace(/\+business$/, '');
+}
+
+/** Allowlisted wallet fields. Root secrets and chain account secrets stay off the response. */
+function sanitizeWalletSummary(wallet: Record<string, unknown>) {
+  const chains = sanitizedChains(wallet);
+  return {
+    id: String(wallet._id ?? wallet.id ?? ''),
+    userId: walletOwnerId(wallet),
+    ownerId: docId(wallet.ownerId) || null,
+    customerId: docId(wallet.customerId) || null,
+    type: 'multichain' as const,
+    provisioned: true,
+    status: typeof wallet.status === 'string' ? wallet.status : null,
+    twoFactorEnabled: Boolean(wallet.twoFactorEnabled),
+    turnOnTestnets: Boolean(wallet.turnOnTestnets),
+    chainCount: chains.length,
+    chains,
+    createdAt: wallet.createdAt ?? null,
+    updatedAt: wallet.updatedAt ?? null,
   };
 }
 
@@ -197,20 +278,7 @@ async function shapeMultichainWallet(
   wallet: Record<string, unknown>,
   user?: Record<string, unknown> | null,
 ) {
-  const chainsRaw = wallet.chains;
-  const chainEntries: Array<NonNullable<ReturnType<typeof sanitizeChainEntry>>> = [];
-  if (chainsRaw && typeof chainsRaw === 'object') {
-    // Map or plain object from lean()
-    const asMap = chainsRaw instanceof Map ? chainsRaw : null;
-    const pairs: Array<[string, unknown]> = asMap
-      ? Array.from(asMap.entries())
-      : Object.entries(chainsRaw as Record<string, unknown>);
-    for (const [key, value] of pairs) {
-      const sanitized = sanitizeChainEntry(key, value);
-      if (sanitized) chainEntries.push(sanitized);
-    }
-  }
-  chainEntries.sort((a, b) => a.chainId - b.chainId);
+  const chainEntries = sanitizedChains(wallet);
 
   const balances = await fetchBalancesForChains(chainEntries);
   const balanceByChain = new Map(balances.map((b) => [b.chainId, b]));
@@ -633,10 +701,17 @@ function normalizeExplorerTx(tx: ExplorerTx) {
   };
 }
 
+function sameWalletUser(rowUserId: string | null, requested: string): boolean {
+  if (!rowUserId) return false;
+  const normalize = (id: string) => id.replace(/\+business$/, '');
+  return normalize(rowUserId) === normalize(requested);
+}
+
 async function loadExplorerCrypto(
   rail: string,
   chainIdParam: string | undefined,
   query: Record<string, unknown>,
+  userId?: string,
 ): Promise<ReturnType<typeof normalizeExplorerTx>[]> {
   const { from, to } = dateRangeBounds(query);
   const chainIds =
@@ -654,6 +729,7 @@ async function loadExplorerCrypto(
     const accounts = await collectChainAccounts(String(chainId));
     for (const row of accounts) {
       if (!row.address) continue;
+      if (userId && !sameWalletUser(row.userId, userId)) continue;
       wallets.push({ chainId, address: row.address, userId: row.userId });
     }
   }
@@ -963,6 +1039,94 @@ async function loadServerCryptoRows(
   );
 }
 
+function textSearchFilter(fields: string[], search: string): FilterQuery<LooseDoc> {
+  const pattern = new RegExp(escapeRegex(search), 'i');
+  return { $or: fields.map((field) => ({ [field]: pattern })) };
+}
+
+function cryptoActivityFilter(
+  query: Record<string, unknown>,
+  rail: string,
+  chainIdParam: string | undefined,
+): FilterQuery<LooseDoc> {
+  const parts: FilterQuery<LooseDoc>[] = [
+    cryptoChainFilter(rail, chainIdParam),
+    cryptoDateFilter(query),
+  ];
+  const userId = typeof query.userId === 'string' ? query.userId.trim() : '';
+  if (userId) parts.push(userOrFilter(userId));
+  const type = typeof query.type === 'string' ? query.type.trim() : '';
+  if (type) parts.push({ type: type.toLowerCase() });
+  const search = typeof query.search === 'string' ? query.search.trim() : '';
+  if (search) {
+    parts.push(textSearchFilter(['txHash', 'hash', 'from', 'to', 'walletAddress'], search));
+  }
+  return mergeFilters(...parts);
+}
+
+function walletServerActivityFilter(
+  query: Record<string, unknown>,
+  rail: string,
+  chainIdParam: string | undefined,
+): FilterQuery<LooseDoc> {
+  const parts: FilterQuery<LooseDoc>[] = [
+    cryptoChainFilter(rail, chainIdParam),
+    createdAtRangeFilter(query),
+  ];
+  const userId = typeof query.userId === 'string' ? query.userId.trim() : '';
+  if (userId) parts.push(userOrFilter(userId));
+  const type = typeof query.type === 'string' ? query.type.trim() : '';
+  if (type) parts.push({ transactionType: type });
+  const search = typeof query.search === 'string' ? query.search.trim() : '';
+  if (search) {
+    parts.push(
+      textSearchFilter(
+        ['transactionHash', 'txHash', 'from', 'to', 'source_account', 'receipient'],
+        search,
+      ),
+    );
+  }
+  return mergeFilters(...parts);
+}
+
+function swapActivityFilter(
+  query: Record<string, unknown>,
+  chainIdParam: string | undefined,
+): FilterQuery<LooseDoc> {
+  const parts: FilterQuery<LooseDoc>[] = [cryptoDateFilter(query)];
+  if (chainIdParam && Number.isFinite(Number(chainIdParam))) {
+    const chainNum = Number(chainIdParam);
+    parts.push({
+      $or: [
+        { fromChainId: chainNum },
+        { toChainId: chainNum },
+        { chainId: chainNum },
+        { fromChainId: String(chainIdParam) },
+        { toChainId: String(chainIdParam) },
+        { chainId: String(chainIdParam) },
+      ],
+    });
+  }
+  const userId = typeof query.userId === 'string' ? query.userId.trim() : '';
+  if (userId) parts.push(userOrFilter(userId));
+  const type = typeof query.type === 'string' ? query.type.trim().toLowerCase() : '';
+  if (type) parts.push({ $or: [{ type }, { swapType: type }, { direction: type }] });
+  const search = typeof query.search === 'string' ? query.search.trim() : '';
+  if (search) {
+    parts.push(textSearchFilter(['txHash', 'hash', 'from', 'to', 'walletAddress'], search));
+  }
+  return mergeFilters(...parts);
+}
+
+function explorerApplies(rail: string, chainIdParam?: string): boolean {
+  if (chainIdParam && Number.isFinite(Number(chainIdParam))) {
+    return explorerSupportsChain(Number(chainIdParam));
+  }
+  if (rail === 'sep') return SEP_CHAIN_IDS.some((id) => explorerSupportsChain(id));
+  if (rail === 'multichain') return MULTICHAIN_IDS.some((id) => explorerSupportsChain(id));
+  return false;
+}
+
 export async function listCryptoTransactions(
   query: Record<string, unknown>,
   skip: number,
@@ -970,30 +1134,12 @@ export async function listCryptoTransactions(
 ) {
   const rail = String(query.rail || 'sep').toLowerCase();
   const chainIdParam = typeof query.chainId === 'string' ? query.chainId : undefined;
-  const filter: FilterQuery<LooseDoc> = mergeFilters(
-    cryptoChainFilter(rail, chainIdParam),
-    cryptoDateFilter(query),
-  );
-  if (typeof query.userId === 'string' && query.userId.trim()) {
-    Object.assign(filter, userOrFilter(query.userId.trim()));
-  }
-  if (typeof query.type === 'string' && query.type.trim()) {
-    filter.type = query.type.trim().toLowerCase();
-  }
+  const userId = typeof query.userId === 'string' ? query.userId.trim() : '';
+  const type = typeof query.type === 'string' ? query.type.trim().toLowerCase() : '';
   const search = typeof query.search === 'string' ? query.search.trim() : '';
-  if (search) {
-    const pattern = new RegExp(escapeRegex(search), 'i');
-    filter.$or = [
-      ...(Array.isArray(filter.$or) ? filter.$or : []),
-      { txHash: pattern },
-      { hash: pattern },
-      { from: pattern },
-      { to: pattern },
-      { walletAddress: pattern },
-    ];
-  }
 
-  try {
+  if (await collectionExists(WalletTransaction)) {
+    const filter = cryptoActivityFilter(query, rail, chainIdParam);
     const [total, items] = await Promise.all([
       WalletTransaction.countDocuments(filter),
       WalletTransaction.find(filter)
@@ -1002,62 +1148,40 @@ export async function listCryptoTransactions(
         .limit(limit)
         .lean(),
     ]);
-    if (total > 0) {
-      return {
-        total,
-        items: (items as Record<string, unknown>[]).map((row) => normalizeCryptoTx(row, 'wallet')),
-      };
-    }
-  } catch {
-    /* collection may be empty / missing */
+    return {
+      total,
+      items: (items as Record<string, unknown>[]).map((row) => normalizeCryptoTx(row, 'wallet')),
+    };
   }
 
-  // Fallback: wallet-server Transaction log (stake / withdraw writes)
-  try {
-    const serverFilter: FilterQuery<LooseDoc> = mergeFilters(
-      cryptoChainFilter(rail, chainIdParam),
-      createdAtRangeFilter(query),
-    );
-    if (typeof query.type === 'string' && query.type.trim()) {
-      serverFilter.transactionType = query.type.trim();
-    }
+  if (await collectionExists(WalletServerTransaction)) {
+    const filter = walletServerActivityFilter(query, rail, chainIdParam);
     const [total, items] = await Promise.all([
-      WalletServerTransaction.countDocuments(serverFilter),
-      WalletServerTransaction.find(serverFilter)
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limit)
-        .lean(),
+      WalletServerTransaction.countDocuments(filter),
+      WalletServerTransaction.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
     ]);
-    if (total > 0) {
-      return {
-        total,
-        items: (items as Record<string, unknown>[]).map((row) => {
-          const normalized = normalizeCryptoTx(
-            {
-              ...row,
-              type: row.transactionType ?? row.type,
-              txHash: row.transactionHash ?? row.txHash,
-              amountFormatted: row.amountInString ?? row.amount,
-              currency: row.from_currency ?? row.to_currency ?? 'SEP',
-            },
-            'wallet',
-          );
-          return { ...normalized, source: 'wallet-server' };
-        }),
-      };
-    }
-  } catch {
-    /* ignore */
+    return {
+      total,
+      source: 'wallet-server' as const,
+      items: (items as Record<string, unknown>[]).map((row) => {
+        const normalized = normalizeCryptoTx(
+          {
+            ...row,
+            type: row.transactionType ?? row.type,
+            txHash: row.transactionHash ?? row.txHash,
+            amountFormatted: row.amountInString ?? row.amount,
+            currency: row.from_currency ?? row.to_currency ?? 'SEP',
+          },
+          'wallet',
+        );
+        return { ...normalized, source: 'wallet-server' };
+      }),
+    };
   }
 
-  // Fallback: live explorer for SEP / EVM chains
-  try {
-    let live = await loadExplorerCrypto(rail, chainIdParam, query);
-    if (typeof query.type === 'string' && query.type.trim()) {
-      const t = query.type.trim().toLowerCase();
-      live = live.filter((tx) => tx.type === t);
-    }
+  if (explorerApplies(rail, chainIdParam)) {
+    let live = await loadExplorerCrypto(rail, chainIdParam, query, userId || undefined);
+    if (type) live = live.filter((tx) => tx.type === type);
     if (search) {
       const q = search.toLowerCase();
       live = live.filter(
@@ -1071,45 +1195,20 @@ export async function listCryptoTransactions(
     return {
       total: live.length,
       items: live.slice(skip, skip + limit),
-      source: 'explorer',
+      source: 'explorer' as const,
     };
-  } catch {
-    /* ignore */
   }
 
-  // Fallback: swaps for multichain when wallettransactions empty
-  if (rail === 'multichain' || rail === 'all') {
-    try {
-      const swapFilter: FilterQuery<LooseDoc> = mergeFilters(
-        cryptoDateFilter(query),
-        chainIdParam
-          ? {
-              $or: [
-                { fromChainId: Number(chainIdParam) },
-                { toChainId: Number(chainIdParam) },
-                { chainId: Number(chainIdParam) },
-                { fromChainId: String(chainIdParam) },
-                { toChainId: String(chainIdParam) },
-                { chainId: String(chainIdParam) },
-              ],
-            }
-          : {},
-      );
-      const [total, items] = await Promise.all([
-        SwapTransaction.countDocuments(swapFilter),
-        SwapTransaction.find(swapFilter)
-          .sort({ createdAt: -1 })
-          .skip(skip)
-          .limit(limit)
-          .lean(),
-      ]);
-      return {
-        total,
-        items: (items as Record<string, unknown>[]).map((row) => normalizeCryptoTx(row, 'swap')),
-      };
-    } catch {
-      /* ignore */
-    }
+  if ((rail === 'multichain' || rail === 'all') && (await collectionExists(SwapTransaction))) {
+    const filter = swapActivityFilter(query, chainIdParam);
+    const [total, items] = await Promise.all([
+      SwapTransaction.countDocuments(filter),
+      SwapTransaction.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+    ]);
+    return {
+      total,
+      items: (items as Record<string, unknown>[]).map((row) => normalizeCryptoTx(row, 'swap')),
+    };
   }
 
   return { items: [], total: 0 };

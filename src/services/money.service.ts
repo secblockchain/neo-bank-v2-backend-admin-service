@@ -1,15 +1,17 @@
-import { FilterQuery, Model, Types } from 'mongoose';
+import { FilterQuery, Model, PipelineStage, Types } from 'mongoose';
 import {
   Card,
   Charge,
   LooseDoc,
   PayPalOrder,
+  RainTransfer,
   RainUser,
   StripePayment,
   WertTransaction,
   docId,
 } from '../models/domain.models';
 import { ApiError } from '../utils/ApiError';
+import { collectionExists } from '../utils/collectionExists';
 import { createdAtRangeFilter, mergeFilters } from '../utils/dateFilter';
 import { enrichWithUserDisplay } from '../utils/enrichUsers';
 import { escapeRegex, parseObjectId } from '../utils/query';
@@ -111,16 +113,6 @@ function normalizeRow(
   };
 }
 
-async function loadRail(
-  model: Model<LooseDoc>,
-  rail: Exclude<TransactionRail, 'all'>,
-  filter: FilterQuery<LooseDoc>,
-  limit: number,
-): Promise<UnifiedRow[]> {
-  const items = await model.find(filter).sort({ createdAt: -1 }).limit(limit).lean();
-  return (items as Record<string, unknown>[]).map((row) => normalizeRow(rail, row));
-}
-
 function userFilter(query: Record<string, unknown>): FilterQuery<LooseDoc> {
   const filter: FilterQuery<LooseDoc> = {};
   const userId = typeof query.userId === 'string' ? query.userId.trim() : '';
@@ -199,6 +191,63 @@ export async function getTransactionAnalytics(query: Record<string, unknown> = {
   };
 }
 
+/** Hard cap for CSV export. The response reports this limit and whether rows were omitted. */
+export const TRANSACTION_EXPORT_LIMIT = 5000;
+
+type RailSpec = {
+  rail: Exclude<TransactionRail, 'all'>;
+  model: Model<LooseDoc>;
+  searchFields: string[];
+};
+
+const TRANSACTION_RAILS: RailSpec[] = [
+  {
+    rail: 'charge',
+    model: Charge,
+    searchFields: ['status', 'type', 'description', 'txHash', 'hash'],
+  },
+  {
+    rail: 'stripe',
+    model: StripePayment,
+    searchFields: ['status', 'paymentIntentId', 'sessionId', 'email'],
+  },
+  {
+    rail: 'paypal',
+    model: PayPalOrder,
+    searchFields: ['status', 'orderId', 'paypalOrderId', 'email'],
+  },
+  {
+    rail: 'wert',
+    model: WertTransaction,
+    searchFields: ['status', 'orderId', 'clickId', 'email'],
+  },
+];
+
+function railsFor(rail: TransactionRail): RailSpec[] {
+  return rail === 'all'
+    ? TRANSACTION_RAILS
+    : TRANSACTION_RAILS.filter((spec) => spec.rail === rail);
+}
+
+function railPipeline(spec: RailSpec & { filter: FilterQuery<LooseDoc> }): PipelineStage[] {
+  const stages: PipelineStage[] = [];
+  if (Object.keys(spec.filter).length) {
+    stages.push({ $match: spec.filter });
+  }
+  stages.push({
+    $addFields: {
+      __rail: spec.rail,
+      __sortAt: {
+        $ifNull: [
+          '$createdAt',
+          { $ifNull: ['$created_at', { $ifNull: ['$paidAt', '$updatedAt'] }] },
+        ],
+      },
+    },
+  });
+  return stages;
+}
+
 export async function listTransactions(
   query: Record<string, unknown>,
   skip: number,
@@ -209,66 +258,50 @@ export async function listTransactions(
     ['charge', 'stripe', 'paypal', 'wert', 'all'].includes(railParam) ? railParam : 'all'
   ) as TransactionRail;
 
-  const fetchCap = Math.min(500, skip + limit + 50);
-  const base = mergeFilters(
-    statusFilter(userFilter(query), query),
-    createdAtRangeFilter(query),
-  );
+  const base = mergeFilters(statusFilter(userFilter(query), query), createdAtRangeFilter(query));
+  const specs = railsFor(rail).map((spec) => ({
+    ...spec,
+    filter: searchFilter(base, query, spec.searchFields),
+  }));
+  const [first, ...rest] = specs;
+  if (!first) return { items: [], total: 0 };
 
-  const loaders: Promise<UnifiedRow[]>[] = [];
-  if (rail === 'all' || rail === 'charge') {
-    loaders.push(
-      loadRail(
-        Charge,
-        'charge',
-        searchFilter(base, query, ['status', 'type', 'description', 'txHash', 'hash']),
-        fetchCap,
-      ),
-    );
-  }
-  if (rail === 'all' || rail === 'stripe') {
-    loaders.push(
-      loadRail(
-        StripePayment,
-        'stripe',
-        searchFilter(base, query, ['status', 'paymentIntentId', 'sessionId', 'email']),
-        fetchCap,
-      ),
-    );
-  }
-  if (rail === 'all' || rail === 'paypal') {
-    loaders.push(
-      loadRail(
-        PayPalOrder,
-        'paypal',
-        searchFilter(base, query, ['status', 'orderId', 'paypalOrderId', 'email']),
-        fetchCap,
-      ),
-    );
-  }
-  if (rail === 'all' || rail === 'wert') {
-    loaders.push(
-      loadRail(
-        WertTransaction,
-        'wert',
-        searchFilter(base, query, ['status', 'orderId', 'clickId', 'email']),
-        fetchCap,
-      ),
-    );
-  }
+  const pipeline: PipelineStage[] = [
+    ...railPipeline(first),
+    ...rest.map(
+      (spec) =>
+        ({
+          $unionWith: {
+            coll: spec.model.collection.collectionName,
+            pipeline: railPipeline(spec),
+          },
+        }) as PipelineStage,
+    ),
+    { $sort: { __sortAt: -1 } },
+    {
+      $facet: {
+        meta: [{ $count: 'total' }],
+        items: [{ $skip: skip }, { $limit: limit }],
+      },
+    },
+  ];
 
-  const batches = await Promise.all(loaders);
-  const merged = batches
-    .flat()
-    .sort((a, b) => {
-      const ta = a.createdAt ? new Date(a.createdAt as string | Date).getTime() : 0;
-      const tb = b.createdAt ? new Date(b.createdAt as string | Date).getTime() : 0;
-      return tb - ta;
-    });
-
-  const total = merged.length;
-  const slice = merged.slice(skip, skip + limit);
-  const items = await enrichWithUserDisplay(slice, ['userId', 'user_id', 'customerId', 'rainUser']);
+  const [result] = await first.model
+    .aggregate<{
+      meta: Array<{ total: number }>;
+      items: Array<Record<string, unknown>>;
+    }>(pipeline)
+    .allowDiskUse(true);
+  const total = result?.meta?.[0]?.total ?? 0;
+  const normalized = (result?.items ?? []).map((row) => {
+    const railName = row.__rail;
+    const rest = { ...row };
+    delete rest.__rail;
+    delete rest.__sortAt;
+    const known = railName === 'charge' || railName === 'stripe' || railName === 'paypal' || railName === 'wert';
+    return normalizeRow(known ? railName : 'charge', rest);
+  });
+  const items = await enrichWithUserDisplay(normalized, ['userId', 'user_id', 'customerId', 'rainUser']);
 
   return { items, total };
 }
@@ -295,7 +328,7 @@ export async function getTransaction(compositeId: string) {
 }
 
 export async function exportTransactionsCsv(query: Record<string, unknown>) {
-  const { items } = await listTransactions(query, 0, 500);
+  const { items, total } = await listTransactions(query, 0, TRANSACTION_EXPORT_LIMIT);
   const header = ['id', 'rail', 'amount', 'currency', 'status', 'userId', 'createdAt'];
   const lines = [header.join(',')];
   for (const row of items) {
@@ -313,7 +346,13 @@ export async function exportTransactionsCsv(query: Record<string, unknown>) {
     });
     lines.push(values.join(','));
   }
-  return lines.join('\n');
+  return {
+    csv: lines.join('\n'),
+    total,
+    exported: items.length,
+    limit: TRANSACTION_EXPORT_LIMIT,
+    truncated: total > items.length,
+  };
 }
 
 export async function listAccounts(query: Record<string, unknown>, skip: number, limit: number) {
@@ -449,9 +488,9 @@ export async function getAccount(userId: string) {
 }
 
 export async function listTransfers(query: Record<string, unknown>, skip: number, limit: number) {
-  const { RainTransfer } = await import('../models/domain.models');
   const filter: FilterQuery<LooseDoc> = { ...createdAtRangeFilter(query) };
-  if (typeof query.status === 'string' && query.status.trim()) filter.status = query.status.trim();
+  const status = typeof query.status === 'string' ? query.status.trim() : '';
+  if (status) filter.status = status;
   const userId = typeof query.userId === 'string' ? query.userId.trim() : '';
   if (userId) {
     filter.$or = [{ userId }, { customerId: userId }, { rainUserId: userId }];
@@ -460,37 +499,34 @@ export async function listTransfers(query: Record<string, unknown>, skip: number
     }
   }
 
-  try {
+  if (await collectionExists(RainTransfer)) {
     const [total, items] = await Promise.all([
       RainTransfer.countDocuments(filter),
       RainTransfer.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
     ]);
-    if (total > 0) {
-      return {
-        items: await enrichWithUserDisplay(items as Record<string, unknown>[], [
-          'userId',
-          'customerId',
-          'rainUserId',
-        ]),
-        total,
-      };
-    }
-  } catch {
-    /* collection may not exist yet */
+    return {
+      items: await enrichWithUserDisplay(items as Record<string, unknown>[], [
+        'userId',
+        'customerId',
+        'rainUserId',
+      ]),
+      total,
+    };
   }
 
-  // Fallback: charges that look like money movement
-  const chargeFilter: FilterQuery<LooseDoc> = {
-    ...userFilter(query),
-    $or: [
-      { type: /transfer|withdraw|deposit|ach|wire/i },
-      { description: /transfer|withdraw|deposit|ach|wire/i },
-      { category: /transfer|payout/i },
-    ],
-  };
-  if (typeof query.status === 'string' && query.status.trim()) {
-    chargeFilter.status = query.status.trim();
-  }
+  // raintransfers is absent. Keep user, status, and date on the charge stand-in.
+  const chargeFilter = mergeFilters(
+    userFilter(query),
+    createdAtRangeFilter(query),
+    {
+      $or: [
+        { type: /transfer|withdraw|deposit|ach|wire/i },
+        { description: /transfer|withdraw|deposit|ach|wire/i },
+        { category: /transfer|payout/i },
+      ],
+    },
+    status ? { status } : {},
+  );
   const [total, items] = await Promise.all([
     Charge.countDocuments(chargeFilter),
     Charge.find(chargeFilter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),

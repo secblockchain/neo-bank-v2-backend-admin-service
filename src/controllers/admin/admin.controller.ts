@@ -702,10 +702,14 @@ export async function transactionDetails(req: Request, res: Response) {
 }
 
 export async function transactionExport(req: Request, res: Response) {
-  const csv = await money.exportTransactionsCsv(queryOf(req));
+  const result = await money.exportTransactionsCsv(queryOf(req));
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', 'attachment; filename="transactions.csv"');
-  return res.status(200).send(csv);
+  res.setHeader('X-Export-Limit', String(result.limit));
+  res.setHeader('X-Export-Count', String(result.exported));
+  res.setHeader('X-Total-Count', String(result.total));
+  res.setHeader('X-Export-Truncated', result.truncated ? 'true' : 'false');
+  return res.status(200).send(result.csv);
 }
 
 export async function accountList(req: Request, res: Response) {
