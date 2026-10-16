@@ -294,10 +294,10 @@ async function shapeMultichainWallet(
     };
   });
 
-  // Prefer the resolved RainUser id; always strip `+business` so admin links hit /users/:id.
   const userId =
+    (typeof wallet.userId === 'string' && wallet.userId) ||
     (user && String(user._id || user.id || '')) ||
-    walletOwnerId(wallet);
+    null;
 
   const totalLocked = chainsWithMoney.reduce(
     (sum, c) => sum + Number(c.locks?.total ?? 0),
@@ -364,7 +364,8 @@ export async function getWallet(id: string) {
   }
 
   if (walletDoc) {
-    const ownerId = walletOwnerId(walletDoc) || id;
+    const ownerId =
+      typeof walletDoc.userId === 'string' ? walletDoc.userId.replace(/\+business$/, '') : id;
     const user = await loadUserSummary(ownerId);
     // Drop sensitive root fields before shaping
     const cleaned = Object.fromEntries(

@@ -23,11 +23,6 @@ import { Actor, recordAudit } from './audit.service';
 const ACCOUNT_STATUSES = ['active', 'suspended', 'frozen', 'banned', 'closed'] as const;
 export type AccountStatus = (typeof ACCOUNT_STATUSES)[number];
 
-/** Wallet-server stores business wallets as `{rainUserId}+business`. */
-function normalizeRainUserId(userId: string): string {
-  return userId.trim().replace(/\+business$/, '');
-}
-
 function userFilter(query: Record<string, unknown>): FilterQuery<Record<string, unknown>> {
   const filter: FilterQuery<Record<string, unknown>> = {};
   const email = typeof query.email === 'string' ? query.email.trim() : '';
@@ -56,7 +51,7 @@ function userFilter(query: Record<string, unknown>): FilterQuery<Record<string, 
 
 export async function listUsers(query: Record<string, unknown>, skip: number, limit: number) {
   const filter = mergeFilters(userFilter(query), createdAtRangeFilter(query));
-  const userId = typeof query.userId === 'string' ? normalizeRainUserId(query.userId) : '';
+  const userId = typeof query.userId === 'string' ? query.userId.trim() : '';
   if (userId) {
     filter._id = parseObjectId(userId, 'user id');
   }
@@ -107,7 +102,7 @@ export async function getUserAnalytics() {
 }
 
 export async function getUserProfile(userId: string) {
-  const id = parseObjectId(normalizeRainUserId(userId), 'user id');
+  const id = parseObjectId(userId, 'user id');
   const user = await RainUser.findById(id).select(USER_SECRET_FIELDS).lean();
   if (!user) throw new ApiError(404, 'User not found.');
   const idStr = String(id);
@@ -163,7 +158,7 @@ export async function setAccountStatus(actor: Actor, userId: string, accountStat
   if (!(ACCOUNT_STATUSES as readonly string[]).includes(accountStatus)) {
     throw new ApiError(400, `accountStatus must be one of: ${ACCOUNT_STATUSES.join(', ')}`);
   }
-  const id = parseObjectId(normalizeRainUserId(userId), 'user id');
+  const id = parseObjectId(userId, 'user id');
   const updated = await RainUser.findByIdAndUpdate(
     id,
     {
@@ -180,7 +175,7 @@ export async function setAccountStatus(actor: Actor, userId: string, accountStat
 }
 
 export async function forceLogout(actor: Actor, userId: string) {
-  const id = parseObjectId(normalizeRainUserId(userId), 'user id');
+  const id = parseObjectId(userId, 'user id');
   const updated = await RainUser.findByIdAndUpdate(
     id,
     { $set: { sessionsInvalidatedAt: new Date() } },
@@ -192,7 +187,7 @@ export async function forceLogout(actor: Actor, userId: string) {
 }
 
 export async function forcePasswordReset(actor: Actor, userId: string) {
-  const id = parseObjectId(normalizeRainUserId(userId), 'user id');
+  const id = parseObjectId(userId, 'user id');
   const now = new Date();
   const updated = await RainUser.findByIdAndUpdate(
     id,
@@ -205,7 +200,7 @@ export async function forcePasswordReset(actor: Actor, userId: string) {
 }
 
 export async function verifyUserEmail(actor: Actor, userId: string) {
-  const id = parseObjectId(normalizeRainUserId(userId), 'user id');
+  const id = parseObjectId(userId, 'user id');
   const updated = await RainUser.findByIdAndUpdate(
     id,
     { $set: { isEmailVerified: true } },
@@ -217,7 +212,7 @@ export async function verifyUserEmail(actor: Actor, userId: string) {
 }
 
 export async function impersonateUser(actor: Actor, userId: string) {
-  const user = await RainUser.findById(parseObjectId(normalizeRainUserId(userId), 'user id')).select(
+  const user = await RainUser.findById(parseObjectId(userId, 'user id')).select(
     'email firstName lastName accountStatus',
   );
   if (!user) throw new ApiError(404, 'User not found.');
@@ -233,14 +228,14 @@ export async function impersonateUser(actor: Actor, userId: string) {
 }
 
 export async function listUserNotes(userId: string) {
-  const id = parseObjectId(normalizeRainUserId(userId), 'user id');
+  const id = parseObjectId(userId, 'user id');
   return AdminNote.find({ userId: id }).sort({ createdAt: -1 }).lean();
 }
 
 export async function addUserNote(actor: Actor, userId: string, body: string) {
   const trimmed = body.trim();
   if (!trimmed) throw new ApiError(400, 'Note body is required.');
-  const id = parseObjectId(normalizeRainUserId(userId), 'user id');
+  const id = parseObjectId(userId, 'user id');
   const exists = await RainUser.exists({ _id: id });
   if (!exists) throw new ApiError(404, 'User not found.');
   const note = await AdminNote.create({
@@ -254,7 +249,7 @@ export async function addUserNote(actor: Actor, userId: string, body: string) {
 }
 
 export async function setUserTags(actor: Actor, userId: string, tags: string[]) {
-  const id = parseObjectId(normalizeRainUserId(userId), 'user id');
+  const id = parseObjectId(userId, 'user id');
   const exists = await RainUser.exists({ _id: id });
   if (!exists) throw new ApiError(404, 'User not found.');
   const cleaned = [...new Set(tags.map((tag) => tag.trim()).filter(Boolean))].slice(0, 20);

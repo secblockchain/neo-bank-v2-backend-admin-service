@@ -26,4 +26,11 @@ describe('admin roles', () => {
     expect(roleHasPermission(ADMIN_ROLE.READ_ONLY, ADMIN_PERMISSION.VIEW_USERS)).toBe(true);
     expect(roleHasPermission(ADMIN_ROLE.READ_ONLY, ADMIN_PERMISSION.MANAGE_KYC)).toBe(false);
   });
+
+  it('gives support view and manage pilots; read_only view only', () => {
+    expect(roleHasPermission(ADMIN_ROLE.SUPPORT, ADMIN_PERMISSION.VIEW_PILOTS)).toBe(true);
+    expect(roleHasPermission(ADMIN_ROLE.SUPPORT, ADMIN_PERMISSION.MANAGE_PILOTS)).toBe(true);
+    expect(roleHasPermission(ADMIN_ROLE.READ_ONLY, ADMIN_PERMISSION.VIEW_PILOTS)).toBe(true);
+    expect(roleHasPermission(ADMIN_ROLE.READ_ONLY, ADMIN_PERMISSION.MANAGE_PILOTS)).toBe(false);
+  });
 });

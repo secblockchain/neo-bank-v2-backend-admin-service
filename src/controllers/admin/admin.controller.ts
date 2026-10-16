@@ -532,8 +532,15 @@ export async function pilotList(req: Request, res: Response) {
   const q = queryOf(req);
   const activeRaw = q.active;
   let active: boolean | undefined;
-  if (activeRaw === 'true' || activeRaw === true) active = true;
-  else if (activeRaw === 'false' || activeRaw === false) active = false;
+  if (activeRaw === undefined || activeRaw === null || activeRaw === '') {
+    active = undefined;
+  } else if (activeRaw === 'true' || activeRaw === true) {
+    active = true;
+  } else if (activeRaw === 'false' || activeRaw === false) {
+    active = false;
+  } else {
+    throw new ApiError(400, 'active must be true or false.');
+  }
 
   return paged(
     req,
@@ -553,6 +560,9 @@ export async function pilotList(req: Request, res: Response) {
 
 export async function pilotAdd(req: Request, res: Response) {
   const body = req.body ?? {};
+  if (body.note !== undefined && body.note !== null && typeof body.note !== 'string') {
+    throw new ApiError(400, 'note must be a string.');
+  }
   const pilot = await pilots.addPilot(
     actorFromRequest(req),
     requireBodyString(body, 'email'),
@@ -567,7 +577,8 @@ export async function pilotAdd(req: Request, res: Response) {
 }
 
 export async function pilotDeactivate(req: Request, res: Response) {
-  const email = decodeURIComponent(String(req.params.email ?? ''));
+  // Express already decodes path params; do not decodeURIComponent again.
+  const email = String(req.params.email ?? '');
   if (!email.trim()) throw new ApiError(400, 'email is required.');
   const pilot = await pilots.deactivatePilot(actorFromRequest(req), email);
   return ok(

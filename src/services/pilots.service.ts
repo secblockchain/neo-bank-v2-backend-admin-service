@@ -1,10 +1,13 @@
 import { PilotUser, RainUser } from '../models/domain.models';
 import { ApiError } from '../utils/ApiError';
 import { normalizeEmailAddress } from '../utils/normalizeEmail';
+import { escapeRegex } from '../utils/query';
 import { Actor, recordAudit } from './audit.service';
 
 const NOTE_MAX_LENGTH = 500;
 const ADDED_BY_MAX_LENGTH = 120;
+/** Cap search length to keep escaped regex queries bounded. */
+const SEARCH_MAX_LENGTH = 100;
 
 function requireNormalized(email: string): string {
   const normalized = normalizeEmailAddress(email);
@@ -28,8 +31,10 @@ export async function listPilots(
 ) {
   const filter: Record<string, unknown> = {};
   if (typeof query.active === 'boolean') filter.active = query.active;
-  if (query.search?.trim()) {
-    filter.email = { $regex: query.search.trim().toLowerCase(), $options: 'i' };
+  const search = query.search?.trim();
+  if (search) {
+    const capped = search.slice(0, SEARCH_MAX_LENGTH).toLowerCase();
+    filter.email = { $regex: escapeRegex(capped), $options: 'i' };
   }
 
   const [total, items] = await Promise.all([
