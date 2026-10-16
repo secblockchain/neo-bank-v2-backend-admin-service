@@ -7,6 +7,7 @@ The admin service reads and sometimes **writes shared Mongo collections** owned 
 | Area | Admin routes (examples) | Shared collection(s) | Risk |
 |------|-------------------------|----------------------|------|
 | User account status / logout / verify | `/users/:id/account-status`, force-logout, verify-email | `rainusers` | Session invalidation is local; external IdP may diverge |
+| Pilot allowlist add / deactivate | `/pilots`, `/pilots/:email/deactivate` | `pilotusers` | Gateway pilot cache TTL (~60s positive / ~15s negative); access may lag briefly after changes |
 | KYC / KYB status | `/kyc/users/:id/status`, `/kyb/:id/status` | `rainkycs`, `rainkybs` | Provider application state may not match admin override |
 | Subscription status | `/subscriptions/:id/status` | `subscriptions` | Billing provider / period logic may not run |
 | Card lock / unlock / status / limit | `/cards/:id/*` | `cards` | Rain card controls may desync |
