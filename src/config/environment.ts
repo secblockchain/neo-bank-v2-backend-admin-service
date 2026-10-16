@@ -31,6 +31,11 @@ export const config = {
   SERVICE_NAME: process.env.SERVICE_NAME || 'admin-service',
 
   MONGODB_URL: process.env.MONGODB_URL || 'mongodb://localhost:27017/neo-bank-us',
+  /**
+   * Wallet-server Mongo (multichainswallets, transactions, wallettransactions).
+   * Separate from the Rain client DB — required for SEP / multi-chain admin views.
+   */
+  WALLET_MONGODB_URL: (process.env.WALLET_MONGODB_URL || '').trim(),
 
   JWT_ACCESS_SECRET: process.env.JWT_ACCESS_SECRET || DEFAULT_JWT_SECRET,
   JWT_ACCESS_EXPIRES_IN: process.env.JWT_ACCESS_EXPIRES_IN || '8h',
@@ -48,6 +53,10 @@ export const config = {
   ADMIN_BOOTSTRAP_LAST_NAME: process.env.ADMIN_BOOTSTRAP_LAST_NAME || 'Operator',
 
   ADMIN_IP_ALLOWLIST: parseAllowlist(process.env.ADMIN_IP_ALLOWLIST),
+
+  /** Optional S2S to US provider for live Rain reads (transactions, statements). */
+  US_PROVIDER_BASE_URL: (process.env.US_PROVIDER_BASE_URL || '').replace(/\/$/, ''),
+  US_PROVIDER_API_KEY: process.env.US_PROVIDER_API_KEY || process.env.INTERNAL_API_KEY || '',
 } as const;
 
 export type Config = typeof config;
@@ -56,10 +65,17 @@ export function validateConfig(): string[] {
   const warnings: string[] = [];
 
   if (config.IS_PROD && config.JWT_ACCESS_SECRET === DEFAULT_JWT_SECRET) {
-    warnings.push('JWT_ACCESS_SECRET is using the insecure default value in production.');
+    throw new Error(
+      'JWT_ACCESS_SECRET is using the insecure default value in production. Set a strong secret before starting.',
+    );
   }
   if (!process.env.MONGODB_URL) {
     warnings.push('MONGODB_URL is not set; using the local default.');
+  }
+  if (!process.env.WALLET_MONGODB_URL) {
+    warnings.push(
+      'WALLET_MONGODB_URL is not set; SEP / multi-chain wallets will look empty (they live on wallet-server Mongo).',
+    );
   }
   if (config.IS_PROD && config.ADMIN_BOOTSTRAP_PASSWORD) {
     warnings.push(

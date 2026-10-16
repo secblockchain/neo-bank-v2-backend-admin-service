@@ -15,6 +15,8 @@ import * as kyc from '../../services/kyc.service';
 import * as subscriptions from '../../services/subscriptions.service';
 import * as commerce from '../../services/commerce.service';
 import * as platform from '../../services/platform.service';
+import * as money from '../../services/money.service';
+import * as ops from '../../services/ops.service';
 import { globalSearch } from '../../services/search.service';
 
 function pageOf(req: Request) {
@@ -315,6 +317,14 @@ export async function cardList(req: Request, res: Response) {
     (skip, limit) => commerce.listCards(queryOf(req), skip, limit),
     'Cards retrieved.',
   );
+}
+
+export async function cardAnalytics(req: Request, res: Response) {
+  return ok(req, res, await commerce.getCardAnalytics(), 'Card analytics retrieved.');
+}
+
+export async function savingsAnalytics(req: Request, res: Response) {
+  return ok(req, res, await commerce.getSavingsAnalytics(), 'Savings analytics retrieved.');
 }
 
 export async function cardDetails(req: Request, res: Response) {
@@ -660,4 +670,261 @@ export async function revokeSession(req: Request, res: Response) {
     requireBodyString(req.body ?? {}, 'adminId'),
   );
   return ok(req, res, result, 'Admin session revoked.');
+}
+
+// --- Money / banking ---
+
+export async function transactionAnalytics(req: Request, res: Response) {
+  return ok(
+    req,
+    res,
+    await money.getTransactionAnalytics(queryOf(req)),
+    'Transaction analytics retrieved.',
+  );
+}
+
+export async function transactionList(req: Request, res: Response) {
+  return paged(
+    req,
+    res,
+    (skip, limit) => money.listTransactions(queryOf(req), skip, limit),
+    'Transactions retrieved.',
+  );
+}
+
+export async function transactionDetails(req: Request, res: Response) {
+  return ok(
+    req,
+    res,
+    await money.getTransaction(String(req.params.transactionId)),
+    'Transaction retrieved.',
+  );
+}
+
+export async function transactionExport(req: Request, res: Response) {
+  const csv = await money.exportTransactionsCsv(queryOf(req));
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="transactions.csv"');
+  return res.status(200).send(csv);
+}
+
+export async function accountList(req: Request, res: Response) {
+  return paged(
+    req,
+    res,
+    (skip, limit) => money.listAccounts(queryOf(req), skip, limit),
+    'Accounts retrieved.',
+  );
+}
+
+export async function accountDetails(req: Request, res: Response) {
+  return ok(req, res, await money.getAccount(String(req.params.userId)), 'Account retrieved.');
+}
+
+export async function transferList(req: Request, res: Response) {
+  return paged(
+    req,
+    res,
+    (skip, limit) => money.listTransfers(queryOf(req), skip, limit),
+    'Transfers retrieved.',
+  );
+}
+
+export async function transferDetails(req: Request, res: Response) {
+  return ok(req, res, await money.getTransfer(String(req.params.transferId)), 'Transfer retrieved.');
+}
+
+export async function statementList(req: Request, res: Response) {
+  return paged(
+    req,
+    res,
+    (skip, limit) => money.listStatements(queryOf(req), skip, limit),
+    'Statements retrieved.',
+  );
+}
+
+export async function statementDetails(req: Request, res: Response) {
+  const year = Number(req.params.year);
+  const month = Number(req.params.month);
+  const userId = typeof req.query.userId === 'string' ? req.query.userId : undefined;
+  return ok(
+    req,
+    res,
+    await money.getStatementMeta(year, month, userId),
+    'Statement metadata retrieved.',
+  );
+}
+
+// --- Ops ---
+
+export async function walletList(req: Request, res: Response) {
+  return paged(
+    req,
+    res,
+    (skip, limit) => ops.listWallets(queryOf(req), skip, limit),
+    'Wallets retrieved.',
+  );
+}
+
+export async function walletChainAnalytics(req: Request, res: Response) {
+  const chainId = String(queryOf(req).chainId || '19518');
+  return ok(req, res, await ops.getWalletChainAnalytics(chainId), 'Wallet chain analytics.');
+}
+
+export async function walletChainBalances(req: Request, res: Response) {
+  return paged(
+    req,
+    res,
+    (skip, limit) => ops.listWalletChainBalances(queryOf(req), skip, limit),
+    'Wallet chain balances retrieved.',
+  );
+}
+
+export async function walletDetails(req: Request, res: Response) {
+  return ok(req, res, await ops.getWallet(String(req.params.walletId)), 'Wallet retrieved.');
+}
+
+export async function cryptoTransactionAnalytics(req: Request, res: Response) {
+  return ok(
+    req,
+    res,
+    await ops.getCryptoTransactionAnalytics(queryOf(req)),
+    'Crypto transaction analytics.',
+  );
+}
+
+export async function cryptoTransactionList(req: Request, res: Response) {
+  return paged(
+    req,
+    res,
+    (skip, limit) => ops.listCryptoTransactions(queryOf(req), skip, limit),
+    'Crypto transactions retrieved.',
+  );
+}
+
+export async function stakingList(req: Request, res: Response) {
+  return paged(
+    req,
+    res,
+    (skip, limit) => ops.listStaking(queryOf(req), skip, limit),
+    'Staking positions retrieved.',
+  );
+}
+
+export async function stakingDetails(req: Request, res: Response) {
+  return ok(req, res, await ops.getStaking(String(req.params.stakeId)), 'Staking position retrieved.');
+}
+
+export async function businessList(req: Request, res: Response) {
+  return paged(
+    req,
+    res,
+    (skip, limit) => ops.listBusiness(queryOf(req), skip, limit),
+    'Business accounts retrieved.',
+  );
+}
+
+export async function businessDetails(req: Request, res: Response) {
+  return ok(
+    req,
+    res,
+    await ops.getBusiness(String(req.params.userId)),
+    'Business account retrieved.',
+  );
+}
+
+export async function disputeList(req: Request, res: Response) {
+  return paged(
+    req,
+    res,
+    (skip, limit) => ops.listDisputes(queryOf(req), skip, limit),
+    'Disputes retrieved.',
+  );
+}
+
+export async function disputeDetails(req: Request, res: Response) {
+  return ok(req, res, await ops.getDispute(String(req.params.disputeId)), 'Dispute retrieved.');
+}
+
+export async function supportList(req: Request, res: Response) {
+  return paged(
+    req,
+    res,
+    (skip, limit) => ops.listSupportTickets(queryOf(req), skip, limit),
+    'Support tickets retrieved.',
+  );
+}
+
+export async function supportDetails(req: Request, res: Response) {
+  return ok(
+    req,
+    res,
+    await ops.getSupportTicket(String(req.params.ticketId)),
+    'Support ticket retrieved.',
+  );
+}
+
+export async function supportReply(req: Request, res: Response) {
+  const updated = await ops.replySupportTicket(
+    actorFromRequest(req),
+    String(req.params.ticketId),
+    requireBodyString(req.body ?? {}, 'body'),
+  );
+  return ok(req, res, updated.toObject(), 'Reply added.');
+}
+
+export async function supportStatus(req: Request, res: Response) {
+  const updated = await ops.updateSupportTicketStatus(
+    actorFromRequest(req),
+    String(req.params.ticketId),
+    requireBodyString(req.body ?? {}, 'status'),
+  );
+  return ok(req, res, updated.toObject(), 'Ticket status updated.');
+}
+
+export async function customer360(req: Request, res: Response) {
+  return ok(
+    req,
+    res,
+    await ops.getCustomer360(String(req.params.userId)),
+    'Customer 360 retrieved.',
+  );
+}
+
+export async function reportsSummary(req: Request, res: Response) {
+  return ok(req, res, await ops.getReportsSummary(), 'Reports summary retrieved.');
+}
+
+export async function growthInsights(req: Request, res: Response) {
+  return ok(req, res, await ops.getGrowthInsights(), 'Growth insights retrieved.');
+}
+
+export async function fraudSignals(req: Request, res: Response) {
+  const userId = typeof req.query.userId === 'string' ? req.query.userId : undefined;
+  return ok(req, res, await ops.getFraudSignals(userId), 'Fraud signals retrieved.');
+}
+
+export async function physicalCardOrders(req: Request, res: Response) {
+  return paged(
+    req,
+    res,
+    (skip, limit) => ops.listPhysicalCardOrders(queryOf(req), skip, limit),
+    'Physical card orders retrieved.',
+  );
+}
+
+export async function maintenanceGet(req: Request, res: Response) {
+  return ok(req, res, await ops.getMaintenanceState(), 'Maintenance state retrieved.');
+}
+
+export async function maintenanceSet(req: Request, res: Response) {
+  if (typeof req.body?.enabled !== 'boolean') {
+    throw new ApiError(400, 'enabled boolean is required.');
+  }
+  return ok(
+    req,
+    res,
+    await ops.setMaintenanceState(actorFromRequest(req), req.body.enabled),
+    'Maintenance state updated.',
+  );
 }

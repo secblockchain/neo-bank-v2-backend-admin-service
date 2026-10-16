@@ -28,6 +28,8 @@ const manageFraud = requirePermission(ADMIN_PERMISSION.MANAGE_FRAUD);
 const approve = requirePermission(ADMIN_PERMISSION.APPROVE_SENSITIVE_ACTIONS);
 const manageAdmins = requirePermission(ADMIN_PERMISSION.MANAGE_ADMINS);
 const impersonate = requirePermission(ADMIN_PERMISSION.IMPERSONATE_USERS);
+const viewSupport = requirePermission(ADMIN_PERMISSION.VIEW_SUPPORT);
+const manageSupport = requirePermission(ADMIN_PERMISSION.MANAGE_SUPPORT);
 
 router.post('/auth/login', asyncHandler(admin.login));
 
@@ -87,6 +89,8 @@ router.get('/charges', viewFinance, asyncHandler(admin.chargeList));
 router.get('/packages', viewFinance, asyncHandler(admin.packageList));
 
 router.get('/cards', viewTransactions, asyncHandler(admin.cardList));
+router.get('/cards/analytics', viewTransactions, asyncHandler(admin.cardAnalytics));
+router.get('/cards/physical-orders', viewTransactions, asyncHandler(admin.physicalCardOrders));
 router.get('/cards/:cardId', viewTransactions, asyncHandler(admin.cardDetails));
 router.post('/cards/:cardId/lock', manageCards, asyncHandler(admin.cardLock));
 router.post('/cards/:cardId/unlock', manageCards, asyncHandler(admin.cardUnlock));
@@ -98,6 +102,7 @@ router.get('/sep-purchases/stripe', viewFinance, asyncHandler(admin.stripeList))
 router.get('/wert/orders', viewFinance, asyncHandler(admin.wertList));
 
 router.get('/savings-plans', viewFinance, asyncHandler(admin.savingsList));
+router.get('/savings-plans/analytics', viewFinance, asyncHandler(admin.savingsAnalytics));
 router.get('/savings-plans/:planId', viewFinance, asyncHandler(admin.savingsDetails));
 router.post('/savings-plans/:planId/status', manageSavings, asyncHandler(admin.savingsStatus));
 router.post(
@@ -143,5 +148,51 @@ router.patch('/security/settings', requireSuperAdmin, asyncHandler(admin.securit
 router.get('/security/kill-switch', requireSuperAdmin, asyncHandler(admin.killSwitchGet));
 router.post('/security/kill-switch', requireSuperAdmin, asyncHandler(admin.killSwitchSet));
 router.post('/security/sessions/revoke', requireSuperAdmin, asyncHandler(admin.revokeSession));
+
+// Banking & money
+router.get('/transactions/analytics', viewTransactions, asyncHandler(admin.transactionAnalytics));
+router.get('/transactions/export', viewTransactions, asyncHandler(admin.transactionExport));
+router.get('/transactions', viewTransactions, asyncHandler(admin.transactionList));
+router.get(
+  '/transactions/:transactionId',
+  viewTransactions,
+  asyncHandler(admin.transactionDetails),
+);
+router.get('/accounts', viewTransactions, asyncHandler(admin.accountList));
+router.get('/accounts/:userId', viewTransactions, asyncHandler(admin.accountDetails));
+router.get('/transfers', viewTransactions, asyncHandler(admin.transferList));
+router.get('/transfers/:transferId', viewTransactions, asyncHandler(admin.transferDetails));
+router.get('/statements', viewFinance, asyncHandler(admin.statementList));
+router.get('/statements/:year/:month', viewFinance, asyncHandler(admin.statementDetails));
+
+// Crypto / business / support
+router.get('/wallets/analytics', viewTransactions, asyncHandler(admin.walletChainAnalytics));
+router.get('/wallets/balances', viewTransactions, asyncHandler(admin.walletChainBalances));
+router.get('/wallets', viewTransactions, asyncHandler(admin.walletList));
+router.get('/wallets/:walletId', viewTransactions, asyncHandler(admin.walletDetails));
+router.get(
+  '/crypto-transactions/analytics',
+  viewTransactions,
+  asyncHandler(admin.cryptoTransactionAnalytics),
+);
+router.get('/crypto-transactions', viewTransactions, asyncHandler(admin.cryptoTransactionList));
+router.get('/staking', viewFinance, asyncHandler(admin.stakingList));
+router.get('/staking/:stakeId', viewFinance, asyncHandler(admin.stakingDetails));
+router.get('/business', viewCompliance, asyncHandler(admin.businessList));
+router.get('/business/:userId', viewCompliance, asyncHandler(admin.businessDetails));
+router.get('/disputes', viewTransactions, asyncHandler(admin.disputeList));
+router.get('/disputes/:disputeId', viewTransactions, asyncHandler(admin.disputeDetails));
+router.get('/support', viewSupport, asyncHandler(admin.supportList));
+router.get('/support/:ticketId', viewSupport, asyncHandler(admin.supportDetails));
+router.post('/support/:ticketId/reply', manageSupport, asyncHandler(admin.supportReply));
+router.post('/support/:ticketId/status', manageSupport, asyncHandler(admin.supportStatus));
+
+// Depth / parity-plus
+router.get('/users/:userId/360', viewUsers, asyncHandler(admin.customer360));
+router.get('/reports/summary', viewFinance, asyncHandler(admin.reportsSummary));
+router.get('/dashboards/growth', viewDashboard, asyncHandler(admin.growthInsights));
+router.get('/fraud/signals', viewFraud, asyncHandler(admin.fraudSignals));
+router.get('/maintenance', viewSystem, asyncHandler(admin.maintenanceGet));
+router.post('/maintenance', manageFlags, asyncHandler(admin.maintenanceSet));
 
 export default router;

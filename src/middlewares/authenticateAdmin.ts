@@ -5,12 +5,13 @@ import { ApiError } from '../utils/ApiError';
 import { asyncStorage } from '../lib/logger';
 
 export const authenticateAdmin = async (req: Request, _res: Response, next: NextFunction) => {
-  const token =
-    req.cookies?.accessToken ||
-    req
-      .header('Authorization')
-      ?.replace(/^Bearer\s+/i, '')
-      .trim();
+  // Prefer Authorization so a browser cookie from the customer app (same localhost
+  // domain) cannot override an explicit admin Bearer token.
+  const bearer = req
+    .header('Authorization')
+    ?.replace(/^Bearer\s+/i, '')
+    .trim();
+  const token = bearer || req.cookies?.accessToken || req.cookies?.adminAccessToken;
 
   if (!token) {
     throw new ApiError(401, 'Access denied. No token provided.');

@@ -1,14 +1,22 @@
 import { FilterQuery, Types } from 'mongoose';
 import { AdminNote, AdminUserTag } from '../models/admin.models';
 import {
+  Card,
+  Charge,
+  PayPalOrder,
+  RainKyb,
   RainKyc,
   RainUser,
+  SavingsPlan,
+  StripePayment,
   Subscription,
   USER_SECRET_FIELDS,
+  WertTransaction,
   docId,
 } from '../models/domain.models';
 import { ApiError } from '../utils/ApiError';
 import { generateImpersonationToken } from '../utils/jwt';
+import { createdAtRangeFilter, mergeFilters } from '../utils/dateFilter';
 import { escapeRegex, parseObjectId } from '../utils/query';
 import { Actor, recordAudit } from './audit.service';
 
@@ -42,7 +50,11 @@ function userFilter(query: Record<string, unknown>): FilterQuery<Record<string, 
 }
 
 export async function listUsers(query: Record<string, unknown>, skip: number, limit: number) {
-  const filter = userFilter(query);
+  const filter = mergeFilters(userFilter(query), createdAtRangeFilter(query));
+  const userId = typeof query.userId === 'string' ? query.userId.trim() : '';
+  if (userId) {
+    filter._id = parseObjectId(userId, 'user id');
+  }
   const [total, items] = await Promise.all([
     RainUser.countDocuments(filter),
     RainUser.find(filter)
@@ -52,23 +64,40 @@ export async function listUsers(query: Record<string, unknown>, skip: number, li
       .limit(limit)
       .lean(),
   ]);
-  return { items, total };
+  const ids = items.map((row) => row._id).filter(Boolean);
+  const tagRows = ids.length
+    ? await AdminUserTag.find({ userId: { $in: ids } }).lean()
+    : [];
+  const tagsByUser = new Map(tagRows.map((row) => [String(row.userId), row.tags ?? []]));
+  return {
+    items: items.map((row) => ({
+      ...row,
+      tags: tagsByUser.get(String(row._id)) ?? [],
+    })),
+    total,
+  };
 }
 
 export async function getUserAnalytics() {
-  const [total, verified, business] = await Promise.all([
+  const [total, verified, business, byStatus, byAccountKind] = await Promise.all([
     RainUser.countDocuments(),
     RainUser.countDocuments({ isEmailVerified: true }),
     RainUser.countDocuments({ accountKind: 'business' }),
-  ]);
-  const byStatus = await RainUser.aggregate<{ _id: string | null; count: number }>([
-    { $group: { _id: '$accountStatus', count: { $sum: 1 } } },
+    RainUser.aggregate<{ _id: string | null; count: number }>([
+      { $group: { _id: '$accountStatus', count: { $sum: 1 } } },
+    ]),
+    RainUser.aggregate<{ _id: string | null; count: number }>([
+      { $group: { _id: '$accountKind', count: { $sum: 1 } } },
+    ]),
   ]);
   return {
     total,
     verified,
     business,
     byStatus: Object.fromEntries(byStatus.map((row) => [row._id ?? 'active', row.count])),
+    byAccountKind: Object.fromEntries(
+      byAccountKind.map((row) => [row._id ?? 'unknown', row.count]),
+    ),
   };
 }
 
@@ -76,13 +105,53 @@ export async function getUserProfile(userId: string) {
   const id = parseObjectId(userId, 'user id');
   const user = await RainUser.findById(id).select(USER_SECRET_FIELDS).lean();
   if (!user) throw new ApiError(404, 'User not found.');
-  const [kyc, subscriptions, notes, tags] = await Promise.all([
+  const idStr = String(id);
+  const userFilter = {
+    $or: [{ rainUserId: idStr }, { customerId: idStr }, { userId: idStr }, { user_id: idStr }],
+  };
+  const [
+    kyc,
+    kyb,
+    subscriptions,
+    notes,
+    tags,
+    cardCount,
+    savingsCount,
+    chargesCount,
+    paypalCount,
+    stripeCount,
+    wertCount,
+  ] = await Promise.all([
     RainKyc.findOne({ rainUser: id }).lean(),
+    RainKyb.findOne({ rainUser: id })
+      .select('kycApprovedStatus applicationStatus name entity.name issuerCountry updatedAt')
+      .lean(),
     Subscription.find({ user_id: id }).lean(),
     AdminNote.find({ userId: id }).sort({ createdAt: -1 }).limit(50).lean(),
     AdminUserTag.findOne({ userId: id }).lean(),
+    Card.countDocuments(userFilter),
+    SavingsPlan.countDocuments({
+      $or: [{ user_id: id }, { userId: id }],
+    }),
+    Charge.countDocuments({
+      $or: [{ user_id: id }, { userId: id }],
+    }),
+    PayPalOrder.countDocuments({ userId: id }),
+    StripePayment.countDocuments({ userId: id }),
+    WertTransaction.countDocuments({ userId: id }),
   ]);
-  return { user, kyc, subscriptions, notes, tags: tags?.tags ?? [] };
+  return {
+    user,
+    kyc,
+    kyb,
+    subscriptions,
+    notes,
+    tags: tags?.tags ?? [],
+    cardCount,
+    savingsCount,
+    chargesCount,
+    purchaseCounts: { paypal: paypalCount, stripe: stripeCount, wert: wertCount },
+  };
 }
 
 export async function setAccountStatus(actor: Actor, userId: string, accountStatus: string) {

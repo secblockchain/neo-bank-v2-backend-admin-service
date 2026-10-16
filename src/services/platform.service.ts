@@ -181,6 +181,25 @@ async function applyPendingAction(actor: Actor, type: string, payload: Record<st
       String(payload.status ?? ''),
     );
   }
+  if (type === 'card_lock' || type === 'card_unlock' || type === 'card_status') {
+    const commerce = await import('./commerce.service');
+    const cardId = String(payload.cardId ?? '');
+    if (type === 'card_lock') return commerce.lockCard(actor, cardId);
+    if (type === 'card_unlock') return commerce.unlockCard(actor, cardId);
+    return commerce.setCardStatus(actor, cardId, String(payload.status ?? ''));
+  }
+  if (type === 'savings_status' || type === 'savings_terminate') {
+    const commerce = await import('./commerce.service');
+    const planId = String(payload.planId ?? '');
+    if (type === 'savings_terminate') {
+      return commerce.terminateSavingsPlan(
+        actor,
+        planId,
+        typeof payload.path === 'string' ? payload.path : undefined,
+      );
+    }
+    return commerce.setSavingsStatus(actor, planId, String(payload.status ?? ''));
+  }
   return { applied: false, reason: 'Recorded only. This action type has no automatic apply.' };
 }
 

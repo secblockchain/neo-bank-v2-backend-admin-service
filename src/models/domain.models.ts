@@ -1,4 +1,4 @@
-import { Schema, model, Document, Types } from 'mongoose';
+import mongoose, { Schema, model, Document, Types, Connection } from 'mongoose';
 
 /**
  * Read models for collections owned by the other US services.
@@ -28,6 +28,53 @@ export const WertTransaction = model<LooseDoc>('WertTransaction', new Schema({},
 export const SavingsPlan = model<LooseDoc>('SavingsPlan', new Schema({}, loose));
 export const Notification = model<LooseDoc>('Notification', new Schema({}, loose));
 export const Logs = model<LooseDoc>('Logs', new Schema({}, { ...loose, timestamps: false }));
+
+/**
+ * Wallet-server owns these collections on a separate Mongo (WALLET_MONGODB_URL).
+ * Models bind to `walletConnection` so admin can read crypto without sharing DBs.
+ */
+export const walletConnection: Connection = mongoose.createConnection();
+
+export const MultichainsWallet = walletConnection.model<LooseDoc>(
+  'MultichainsWallet',
+  new Schema({}, { ...loose, collection: 'multichainswallets' }),
+);
+/** Synced on-chain wallet activity (SEP + other chains) from customer / wallet stack. */
+export const WalletTransaction = walletConnection.model<LooseDoc>(
+  'WalletTransaction',
+  new Schema({}, { ...loose, collection: 'wallettransactions' }),
+);
+/** Wallet-server outbound tx log (stake/withdraw/send). */
+export const WalletServerTransaction = walletConnection.model<LooseDoc>(
+  'WalletServerTransaction',
+  new Schema({}, { ...loose, collection: 'transactions' }),
+);
+export const SwapTransaction = walletConnection.model<LooseDoc>(
+  'SwapTransaction',
+  new Schema({}, { ...loose, collection: 'swaptransactions' }),
+);
+/** Wallet-server stakes live in `stakings` (not `stakingpositions`). */
+export const StakingPosition = walletConnection.model<LooseDoc>(
+  'StakingPosition',
+  new Schema({}, { ...loose, collection: 'stakings' }),
+);
+
+export const SupportTicket = model<LooseDoc>(
+  'SupportTicket',
+  new Schema({}, { ...loose, collection: 'supporttickets' }),
+);
+export const RainDispute = model<LooseDoc>(
+  'RainDispute',
+  new Schema({}, { ...loose, collection: 'raindisputes' }),
+);
+export const RainTransfer = model<LooseDoc>(
+  'RainTransfer',
+  new Schema({}, { ...loose, collection: 'raintransfers' }),
+);
+export const RainPaymentAccount = model<LooseDoc>(
+  'RainPaymentAccount',
+  new Schema({}, { ...loose, collection: 'rainpaymentaccounts' }),
+);
 
 export const USER_SECRET_FIELDS =
   '-password -totpSecret -totpSecretIv -totpPendingSecret -totpPendingSecretIv -twoFactorCode -totpBackupCodes';
