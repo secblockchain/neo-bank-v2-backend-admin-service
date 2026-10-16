@@ -19,7 +19,11 @@ export const generateAdminAccessToken = (
     expiresIn: ACCESS_EXPIRES_IN,
   });
 
-/** Short-lived customer session for a super-admin impersonation. Not an admin token. */
+/**
+ * Short-lived customer session for admin impersonation. Not an admin token.
+ * Customer / US-provider auth treat `impersonatedBy` as a read-only session
+ * (mutations return 403 except logout). Expires in 15 minutes.
+ */
 export const generateImpersonationToken = (payload: {
   userId: string;
   email: string;
@@ -35,6 +39,7 @@ export const generateImpersonationToken = (payload: {
       lastName: payload.lastName,
       accountType: 'rain',
       impersonatedBy: payload.impersonatedBy,
+      tokenKind: 'impersonation',
     },
     config.JWT_ACCESS_SECRET,
     { expiresIn: '15m' },

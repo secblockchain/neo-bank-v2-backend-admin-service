@@ -10,6 +10,8 @@ import {
   WertTransaction,
 } from '../models/domain.models';
 import { ApiError } from '../utils/ApiError';
+import { createdAtRangeFilter, mergeFilters } from '../utils/dateFilter';
+import { enrichWithUserDisplay } from '../utils/enrichUsers';
 import { escapeRegex, parseObjectId } from '../utils/query';
 import { Actor, recordAudit } from './audit.service';
 
@@ -45,7 +47,7 @@ function searchFilter(query: Record<string, unknown>, fields: string[]) {
     const pattern = new RegExp(escapeRegex(search), 'i');
     filter.$or = fields.map((field) => ({ [field]: pattern }));
   }
-  return filter;
+  return mergeFilters(filter, createdAtRangeFilter(query));
 }
 
 async function page(
@@ -67,9 +69,48 @@ export async function listCards(query: Record<string, unknown>, skip: number, li
   if (typeof query.type === 'string' && query.type) filter.type = query.type;
   if (typeof query.customerId === 'string' && query.customerId)
     filter.customerId = query.customerId;
+  const userId = typeof query.userId === 'string' ? query.userId.trim() : '';
+  if (userId) {
+    filter.$or = [
+      { rainUserId: userId },
+      { customerId: userId },
+      { userId },
+      { user_id: userId },
+    ];
+    if (Types.ObjectId.isValid(userId)) {
+      const oid = parseObjectId(userId, 'user id');
+      filter.$or.push({ rainUser: oid }, { customerId: String(oid) }, { rainUserId: String(oid) });
+    }
+  }
   const search = typeof query.search === 'string' ? query.search.trim() : '';
   if (search) filter.last4 = new RegExp(escapeRegex(search));
-  return page(Card, filter, skip, limit);
+  const result = await page(Card, mergeFilters(filter, createdAtRangeFilter(query)), skip, limit);
+  return {
+    ...result,
+    items: await enrichWithUserDisplay(result.items as Record<string, unknown>[], [
+      'customerId',
+      'user_id',
+      'userId',
+      'rainUser',
+    ]),
+  };
+}
+
+export async function getCardAnalytics() {
+  const [total, byStatus, byType] = await Promise.all([
+    Card.countDocuments(),
+    Card.aggregate<{ _id: string | null; count: number }>([
+      { $group: { _id: '$status', count: { $sum: 1 } } },
+    ]),
+    Card.aggregate<{ _id: string | null; count: number }>([
+      { $group: { _id: '$type', count: { $sum: 1 } } },
+    ]),
+  ]);
+  return {
+    total,
+    byStatus: Object.fromEntries(byStatus.map((r) => [r._id ?? 'unknown', r.count])),
+    byType: Object.fromEntries(byType.map((r) => [r._id ?? 'unknown', r.count])),
+  };
 }
 
 export async function getCard(cardId: string) {
@@ -144,16 +185,38 @@ export async function setCardLimit(
   return card;
 }
 
-export function listPayPal(query: Record<string, unknown>, skip: number, limit: number) {
-  return page(PayPalOrder, searchFilter(query, ['paypalOrderId', 'paypalPayerEmail']), skip, limit);
+export async function listPayPal(query: Record<string, unknown>, skip: number, limit: number) {
+  const result = await page(
+    PayPalOrder,
+    searchFilter(query, ['paypalOrderId', 'paypalPayerEmail']),
+    skip,
+    limit,
+  );
+  return {
+    ...result,
+    items: await enrichWithUserDisplay(result.items as Record<string, unknown>[], ['userId']),
+  };
 }
 
-export function listStripe(query: Record<string, unknown>, skip: number, limit: number) {
-  return page(StripePayment, searchFilter(query, ['paymentIntentId']), skip, limit);
+export async function listStripe(query: Record<string, unknown>, skip: number, limit: number) {
+  const result = await page(StripePayment, searchFilter(query, ['paymentIntentId']), skip, limit);
+  return {
+    ...result,
+    items: await enrichWithUserDisplay(result.items as Record<string, unknown>[], ['userId']),
+  };
 }
 
-export function listWert(query: Record<string, unknown>, skip: number, limit: number) {
-  return page(WertTransaction, searchFilter(query, ['wertOrderId', 'clickId']), skip, limit);
+export async function listWert(query: Record<string, unknown>, skip: number, limit: number) {
+  const result = await page(
+    WertTransaction,
+    searchFilter(query, ['wertOrderId', 'clickId']),
+    skip,
+    limit,
+  );
+  return {
+    ...result,
+    items: await enrichWithUserDisplay(result.items as Record<string, unknown>[], ['userId']),
+  };
 }
 
 export async function listSavings(query: Record<string, unknown>, skip: number, limit: number) {
@@ -162,7 +225,32 @@ export async function listSavings(query: Record<string, unknown>, skip: number, 
   if (typeof query.userId === 'string' && query.userId) {
     filter.user_id = parseObjectId(query.userId, 'user id');
   }
-  return page(SavingsPlan, filter, skip, limit);
+  const result = await page(
+    SavingsPlan,
+    mergeFilters(filter, createdAtRangeFilter(query)),
+    skip,
+    limit,
+  );
+  return {
+    ...result,
+    items: await enrichWithUserDisplay(result.items as Record<string, unknown>[], [
+      'user_id',
+      'userId',
+    ]),
+  };
+}
+
+export async function getSavingsAnalytics() {
+  const [total, byStatus] = await Promise.all([
+    SavingsPlan.countDocuments(),
+    SavingsPlan.aggregate<{ _id: string | null; count: number }>([
+      { $group: { _id: '$status', count: { $sum: 1 } } },
+    ]),
+  ]);
+  return {
+    total,
+    byStatus: Object.fromEntries(byStatus.map((r) => [r._id ?? 'unknown', r.count])),
+  };
 }
 
 export async function getSavingsPlan(planId: string) {

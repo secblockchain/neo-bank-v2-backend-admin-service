@@ -1,6 +1,8 @@
 import { FilterQuery } from 'mongoose';
 import { RainKyb, RainKyc, RainUser, USER_SECRET_FIELDS } from '../models/domain.models';
 import { ApiError } from '../utils/ApiError';
+import { createdAtRangeFilter, mergeFilters } from '../utils/dateFilter';
+import { enrichWithUserDisplay } from '../utils/enrichUsers';
 import { escapeRegex, parseObjectId } from '../utils/query';
 import { Actor, recordAudit } from './audit.service';
 
@@ -23,16 +25,24 @@ export async function getKycAnalytics() {
 }
 
 export async function listKyc(query: Record<string, unknown>, skip: number, limit: number) {
-  const filter: FilterQuery<Record<string, unknown>> = {};
+  const filter: FilterQuery<Record<string, unknown>> = mergeFilters(
+    {},
+    createdAtRangeFilter(query),
+  );
   const status = typeof query.status === 'string' ? query.status.trim() : '';
   const email = typeof query.email === 'string' ? query.email.trim().toLowerCase() : '';
+  const search = typeof query.search === 'string' ? query.search.trim().toLowerCase() : '';
+  const userId = typeof query.userId === 'string' ? query.userId.trim() : '';
   if (status) filter.kycApprovedStatus = status;
   if (query.pending === 'true') {
     filter.kycApprovedStatus = { $in: ['REQUESTED', 'NOT_INITIATED', 'TEMPORARY_REJECTION'] };
   }
 
-  if (email) {
-    const user = await RainUser.findOne({ email }).select('_id');
+  if (userId) {
+    filter.rainUser = parseObjectId(userId, 'user id');
+  } else if (email || search) {
+    const pattern = new RegExp(escapeRegex(email || search), 'i');
+    const user = await RainUser.findOne({ email: pattern }).select('_id');
     filter.rainUser = user?._id ?? null;
   }
 
@@ -40,15 +50,11 @@ export async function listKyc(query: Record<string, unknown>, skip: number, limi
     RainKyc.countDocuments(filter),
     RainKyc.find(filter).sort({ updatedAt: -1 }).skip(skip).limit(limit).lean(),
   ]);
-  const userIds = records.map((record) => record.rainUser).filter(Boolean);
-  const users = await RainUser.find({ _id: { $in: userIds } })
-    .select('email firstName lastName country accountKind')
-    .lean();
-  const byId = new Map(users.map((user) => [String(user._id), user]));
-  const items = records.map((record) => ({
-    ...record,
-    user: byId.get(String(record.rainUser)) ?? null,
-  }));
+  const items = await enrichWithUserDisplay(records as Record<string, unknown>[], [
+    'rainUser',
+    'userId',
+    'user_id',
+  ]);
   return { items, total };
 }
 
@@ -108,24 +114,46 @@ export async function listKyb(query: Record<string, unknown>, skip: number, limi
   const filter: FilterQuery<Record<string, unknown>> = {};
   const status = typeof query.status === 'string' ? query.status.trim() : '';
   const search = typeof query.search === 'string' ? query.search.trim() : '';
+  const userId = typeof query.userId === 'string' ? query.userId.trim() : '';
   if (status) filter.kycApprovedStatus = status;
+  if (userId) {
+    filter.rainUser = parseObjectId(userId, 'user id');
+  }
   if (search) {
+    const pattern = new RegExp(escapeRegex(search), 'i');
+    const matchedUsers = await RainUser.find({
+      $or: [{ email: pattern }, { firstName: pattern }, { lastName: pattern }, { displayName: pattern }],
+    })
+      .select('_id')
+      .lean();
+    const matchedUserIds = matchedUsers.map((user) => user._id);
     filter.$or = [
-      { companyName: new RegExp(escapeRegex(search), 'i') },
-      { email: new RegExp(escapeRegex(search), 'i') },
+      { name: pattern },
+      { 'entity.name': pattern },
+      { applicationStatus: pattern },
+      ...(matchedUserIds.length ? [{ rainUser: { $in: matchedUserIds } }] : []),
     ];
   }
-  const [total, items] = await Promise.all([
+  const [total, records] = await Promise.all([
     RainKyb.countDocuments(filter),
     RainKyb.find(filter).sort({ updatedAt: -1 }).skip(skip).limit(limit).lean(),
+  ]);
+  const items = await enrichWithUserDisplay(records as Record<string, unknown>[], [
+    'rainUser',
+    'userId',
+    'user_id',
   ]);
   return { items, total };
 }
 
 export async function getKybByUser(userId: string) {
-  const kyb = await RainKyb.findOne({ rainUser: parseObjectId(userId, 'user id') }).lean();
+  const id = parseObjectId(userId, 'user id');
+  const [user, kyb] = await Promise.all([
+    RainUser.findById(id).select(USER_SECRET_FIELDS).lean(),
+    RainKyb.findOne({ rainUser: id }).lean(),
+  ]);
   if (!kyb) throw new ApiError(404, 'KYB record not found.');
-  return kyb;
+  return { user: user ?? null, kyb };
 }
 
 export async function updateKybStatus(actor: Actor, userId: string, kycApprovedStatus: string) {

@@ -1,6 +1,8 @@
 import { FilterQuery } from 'mongoose';
-import { Charge, Package, Subscription } from '../models/domain.models';
+import { Charge, Package, Subscription, docId } from '../models/domain.models';
 import { ApiError } from '../utils/ApiError';
+import { createdAtRangeFilter, mergeFilters } from '../utils/dateFilter';
+import { enrichWithUserDisplay } from '../utils/enrichUsers';
 import { parseObjectId } from '../utils/query';
 import { Actor, recordAudit } from './audit.service';
 
@@ -18,9 +20,15 @@ export async function getSubscriptionAnalytics() {
     _id: { status: string; accountType: string };
     count: number;
   }>([{ $group: { _id: { status: '$status', accountType: '$accountType' }, count: { $sum: 1 } } }]);
+  const byStatus: Record<string, number> = {};
+  for (const row of rows) {
+    const status = row._id?.status ?? 'unknown';
+    byStatus[status] = (byStatus[status] ?? 0) + row.count;
+  }
   return {
     total: rows.reduce((sum, row) => sum + row.count, 0),
     groups: rows.map((row) => ({ ...row._id, count: row.count })),
+    byStatus,
   };
 }
 
@@ -29,7 +37,10 @@ export async function listSubscriptions(
   skip: number,
   limit: number,
 ) {
-  const filter: FilterQuery<Record<string, unknown>> = {};
+  const filter: FilterQuery<Record<string, unknown>> = mergeFilters(
+    {},
+    createdAtRangeFilter(query),
+  );
   if (typeof query.status === 'string' && query.status) filter.status = query.status;
   if (typeof query.accountType === 'string' && query.accountType)
     filter.accountType = query.accountType;
@@ -40,7 +51,10 @@ export async function listSubscriptions(
     Subscription.countDocuments(filter),
     Subscription.find(filter).sort({ updatedAt: -1 }).skip(skip).limit(limit).lean(),
   ]);
-  return { items, total };
+  return {
+    items: await enrichWithUserDisplay(items as Record<string, unknown>[], ['user_id', 'userId']),
+    total,
+  };
 }
 
 export async function getSubscription(subscriptionId: string) {
@@ -72,8 +86,55 @@ export async function setSubscriptionStatus(actor: Actor, subscriptionId: string
   return updated;
 }
 
+async function enrichChargesWithSubscription(
+  rows: Record<string, unknown>[],
+): Promise<Record<string, unknown>[]> {
+  if (!rows.length) return rows;
+  const ids = [
+    ...new Set(
+      rows
+        .map((row) => docId(row.subscription_id ?? row.subscriptionId))
+        .filter((id) => id && /^[a-f\d]{24}$/i.test(id)),
+    ),
+  ];
+  if (!ids.length) {
+    return rows.map((row) => ({
+      ...row,
+      plan_display_name: null,
+      external_plan_id: null,
+      subscription_status: null,
+      subscription_account_type: null,
+    }));
+  }
+
+  const subscriptions = await Subscription.find({ _id: { $in: ids } })
+    .select('plan_display_name external_plan_id status accountType')
+    .lean();
+  const byId = new Map(
+    subscriptions.map((sub) => [String(sub._id), sub as Record<string, unknown>]),
+  );
+
+  return rows.map((row) => {
+    const idStr = docId(row.subscription_id ?? row.subscriptionId);
+    const sub = idStr ? byId.get(idStr) : undefined;
+    return {
+      ...row,
+      plan_display_name:
+        typeof sub?.plan_display_name === 'string' ? sub.plan_display_name : null,
+      external_plan_id:
+        typeof sub?.external_plan_id === 'string' ? sub.external_plan_id : null,
+      subscription_status: typeof sub?.status === 'string' ? sub.status : null,
+      subscription_account_type:
+        typeof sub?.accountType === 'string' ? sub.accountType : null,
+    };
+  });
+}
+
 export async function listCharges(query: Record<string, unknown>, skip: number, limit: number) {
-  const filter: FilterQuery<Record<string, unknown>> = {};
+  const filter: FilterQuery<Record<string, unknown>> = mergeFilters(
+    {},
+    createdAtRangeFilter(query),
+  );
   if (typeof query.userId === 'string' && query.userId) {
     filter.user_id = parseObjectId(query.userId, 'user id');
   }
@@ -82,7 +143,14 @@ export async function listCharges(query: Record<string, unknown>, skip: number, 
     Charge.countDocuments(filter),
     Charge.find(filter).sort({ _id: -1 }).skip(skip).limit(limit).lean(),
   ]);
-  return { items, total };
+  const withUsers = await enrichWithUserDisplay(
+    items as Record<string, unknown>[],
+    ['user_id', 'userId'],
+  );
+  return {
+    items: await enrichChargesWithSubscription(withUsers as Record<string, unknown>[]),
+    total,
+  };
 }
 
 export async function listPackages() {
